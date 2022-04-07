@@ -1,131 +1,51 @@
-import base64
-import hashlib
 import os
 import pickle
-from abc import *
-from typing import Set, Any, Tuple, Union, Sequence
-import boto3
-from pythagoras.p_hash_address import PHashAddress
+import platform
+from _socket import gethostname
+from datetime import datetime
+from getpass import getpass, getuser
+from socket import socket
+from zoneinfo import ZoneInfo
 
-from pythagoras.global_objects import *
+import string
+from abc import *
+from typing import Set, Any, List, Tuple, Union
+import boto3
+
 
 import jsonpickle
 import jsonpickle.ext.numpy as jsonpickle_numpy
 import jsonpickle.ext.pandas as jsonpickle_pandas
-
 jsonpickle_numpy.register_handlers()
 jsonpickle_pandas.register_handlers()
 
+from pythagoras.global_objects import *
 
-SimpleDictKey = Union[ str, Sequence[str], PHashAddress ]
-""" A value which can be used as a key for SimplePersistentDict. 
+SimpleDictKey = Union[ str, List[str], Tuple[str,...] ]
+""" A value which can be used as a key for SimplePersistentDict.
 
 SimpleDictKey must be a string or a sequence of strings.
-The characters within strings are restricted to allowed_key_chars set.
 """
 
 class SimplePersistentDict(ABC):
-    """Dict-like durable store that accepts sequences of strings as keys.
+    """Dict-like class that only accepts keys which are sequences of strings (SimpleDictKey-s).
 
-    An abstract base class for key-value stores. It accepts keys in a form of
+    An abstract class for a key-value store. It accepts keys in a form of
     either a single sting or a sequence (tuple, list) of strings.
     It imposes no restrictions on types of values in the key-value pairs.
 
-    The API for the class resembles the API of Python's built-in Dict
-    (see https://docs.python.org/3/library/stdtypes.html#mapping-types-dict)
-    with a few changes.
-
-    Attributes
-    ----------
-    immutable_items : bool
-                      True means items are not allowed to be modified or deleted
-                      from a dictionary. It allows for various distributed cache
-                      optimizations for remote storage.
-                      False means normal dict-like behaviour.
-
-    digest_len : int
-                 Length of a hash signature index which SimplePersistentDict
-                 automatically adds to each string in a key
-                 while mapping the key to an address of a value
-                 in a persistent storage backend (e.g. a filename
-                 or an S3 objectname). We need it to ensure correct work
-                 of persistent dictionaries with case-insensitive
-                 (even if case-preserving) filesystems, such as MacOS HFS.
-
+    The API for the class resembles the API of Python's built-in Dict.
     """
-
-    digest_len:int = 8 # TODO: refactor to support variable length
-
-    def __init__(self, immutable_items:bool, **kwargas):
-        self.immutable_items = bool(immutable_items)
-
-
-    def _create_suffix(self, input_str:str) -> str:
-        """ Create a hash signature suffix for a string."""
-
-        assert isinstance(input_str, str)
-
-        input_str = input_str.encode()
-        hash_object = hashlib.md5(input_str)
-        full_digest = base64.b32encode(hash_object.digest()).decode()
-            # TODO: decide how to deal with leading spaces
-            # (which are not allowed on FAT32)
-        suffix = "_" + full_digest[:self.digest_len]
-
-        return suffix
-
-
-    def _add_suffix_if_absent(self, input_str:str) -> str:
-        """ Add a hash signature suffix to a string if it's not there."""
-
-        assert isinstance(input_str, str)
-
-        if len(input_str) > self.digest_len + 1:
-            possibly_already_present_suffix = self._create_suffix(
-                input_str[:-1-self.digest_len])
-            if input_str.endswith(possibly_already_present_suffix):
-                return input_str
-
-        return input_str + self._create_suffix(input_str)
-
-
-    def _remove_suffix_if_present(self, input_str:str) -> str:
-        """ Remove a hash signature suffix from a string if it's detected."""
-
-        assert isinstance(input_str, str)
-
-        if len(input_str) > self.digest_len + 1:
-            possibly_already_present_suffix = self._create_suffix(
-                input_str[:-1-self.digest_len])
-            if input_str.endswith(possibly_already_present_suffix):
-                return input_str[:-1-self.digest_len]
-
-        return input_str
-
-
-    def _remove_all_suffixes_if_present(self, key:SimpleDictKey) -> SimpleDictKey:
-        """ Remove hash signature suffixes from all strings in a key."""
-
-        new_key = []
-        for sub_key in key:
-            new_sub_key = self._remove_suffix_if_present(sub_key)
-            new_key.append(new_sub_key)
-
-        new_key = tuple(new_key)
-
-        return new_key
-
 
     def _normalize_key(self, key:SimpleDictKey) -> Tuple[str,...]:
         """Check if a key meets requirements and return its standardized form.
 
         A key must be either a string or a sequence of non-empty strings.
         If it is a single string, it will be transformed into a tuple,
-        consisting of this sole string. During the transformation,
-        each string will also get a hash-based suffix (a signature).
+        consisting of this sole string.
 
-        Each string in an input  sequence can contain
-        only alphanumerical characters and characters from this list: ()_-.=
+        Each string in a sequence can contain only alphanumerical characters
+        and characters from this list: ()_-.=
         """
 
         try:
@@ -138,69 +58,48 @@ class SimplePersistentDict(ABC):
             assert isinstance(s,str), (
                     "Key must be a string or a sequence of strings.")
             assert len(set(s) - allowed_key_chars) == 0, (
-                f"Invalid characters in the key: {(set(s)-allowed_key_chars)}"
-                + "\nOnly the following chars are allowed in a key:"
-                + "".join(list(allowed_key_chars)))
+                "Only the following chars are allowed in a key:"
+                + str(allowed_key_chars))
             assert len(s), "Only non-empty strings are allowed in a key"
-
-        new_key = []
-        for s in key:
-            new_key.append(self._add_suffix_if_absent(s))
-
-        new_key = tuple(new_key)
-
-        return new_key
-
+        return key
 
 
     @abstractmethod
     def __contains__(self, key:SimpleDictKey) -> bool:
         raise NotImplementedError
 
-
     @abstractmethod
     def __getitem__(self, key:SimpleDictKey) -> Any:
         raise NotImplementedError
 
-
+    @abstractmethod
     def __setitem__(self, key:SimpleDictKey, value:Any):
-        if self.immutable_items: # TODO: change to exceptions
-            assert key not in self, "Can't modify an immutable key-value pair"
         raise NotImplementedError
 
-
+    @abstractmethod
     def __delitem__(self, key:SimpleDictKey):
-        if self.immutable_items: # TODO: change to exceptions
-            assert False, "Can't delete an immutable key-value pair"
         raise NotImplementedError
-
 
     @abstractmethod
     def __len__(self) -> int:
         raise NotImplementedError
-
 
     @abstractmethod
     def _generic_iter(self, iter_type: str):
         assert iter_type in {"keys", "values", "items"}
         raise NotImplementedError
 
-
     def __iter__(self):
         return self._generic_iter("keys")
-
 
     def keys(self):
         return self._generic_iter("keys")
 
-
     def values(self):
         return self._generic_iter("values")
 
-
     def items(self):
         return self._generic_iter("items")
-
 
     def get(self, key:SimpleDictKey, default:Any=None):
         if key in self:
@@ -208,14 +107,12 @@ class SimplePersistentDict(ABC):
         else:
             return default
 
-
     def setdefault(self, key:SimpleDictKey, default:Any=None):
         if key in self:
             return self[key]
         else:
             self[key] = default
             return default
-
 
     def pop(self, key:SimpleDictKey, default:Any):
         if key in self:
@@ -225,13 +122,11 @@ class SimplePersistentDict(ABC):
         else:
             return default
 
-
     def popitem(self) -> Any:
         key = next(iter(self))
         result = self[key]
         del self[key]
         return result
-
 
     def __eq__(self, other) -> bool:
         try:
@@ -244,30 +139,25 @@ class SimplePersistentDict(ABC):
         except:
             return False
 
-
     def __ne__(self, other) -> bool:
         return not (self == other)
-
 
     def clear(self):
         for k in self.keys():
             del self[k]
 
-
     def safe_delete(self, key:SimpleDictKey):
-        """ Delete an item without raising an exception if it doesn't exist.
+        """ Delete an item from a dictionary without raising an exception if the item does not exist.
 
         This method is absent in the original dict API, it is added here
         to minimize network calls for (remote) persistent dictionaries.
         """
-
-        if self.immutable_items: # TODO: change to exceptions
-            assert False, "Can't delete an immutable key-value pair"
-
         try:
             self.__delitem__(key)
         except:
             pass
+
+
 
 
 class FileDirDict(SimplePersistentDict):
@@ -282,10 +172,7 @@ class FileDirDict(SimplePersistentDict):
     or in human-readable text files (using jsonpickles).
     """
 
-    def __init__(self
-                 , dir_name: str = "FileDirDict"
-                 , file_type: str = "pkl"
-                 , immutable_items:bool = False):
+    def __init__(self, dir_name: str = "FileDirDict", file_type: str = "pkl"):
         """A constructor defines location of the store and file format to use.
 
         dir_name is a directory that will contain all the files in
@@ -295,8 +182,6 @@ class FileDirDict(SimplePersistentDict):
         It defines which file format will be used by FileDirDict
         to store values.
         """
-
-        super().__init__(immutable_items = immutable_items)
 
         self.file_type = file_type
 
@@ -319,24 +204,16 @@ class FileDirDict(SimplePersistentDict):
         return num_files
 
     def clear(self):
-
-        assert not self.immutable_items, (
-            "Can't clear a dict that contains immutable items")
-
         for subdir_info in os.walk(self.base_dir, topdown=False):
             (subdir_name, _, files) = subdir_info
             num_files = len(files)
             for f in files:
                 if f.endswith(self.file_type):
                     os.remove(os.path.join(subdir_name, f))
-            if (subdir_name != self.base_dir) and (
-                    len(os.listdir(subdir_name)) == 0 ):
+            if (subdir_name != self.base_dir) and len(os.listdir(subdir_name)) == 0:
                 os.rmdir(subdir_name)
 
-    def _build_full_path(self
-                         , key:SimpleDictKey
-                         , create_subdirs:bool=False
-                         , is_file_path:bool = True):
+    def _build_full_path(self, key:SimpleDictKey, create_subdirs:bool=False, is_file_path:bool = True):
         key = self._normalize_key(key)
         key = [self.base_dir] + list(key)
         dir_names = key[:-1] if is_file_path else key
@@ -355,14 +232,9 @@ class FileDirDict(SimplePersistentDict):
         else:
             return os.path.join(*dir_names)
 
-    # TODO: add this method to the entire hierarchy of persistent dict classes
-    def get_subdict(self, key:SimpleDictKey):
-        full_dir_path = self._build_full_path(
-            key, create_subdirs = True, is_file_path = False)
-        return FileDirDict(
-            dir_name = full_dir_path
-            , file_type=self.file_type
-            , immutable_items= self.immutable_items)
+    def get_subdict(self, key:SimpleDictKey):  # TODO: add this method to the entire hierarchy of persistent dict classes
+        full_dir_path = self._build_full_path(key, create_subdirs = True, is_file_path = False)
+        return FileDirDict(dir_name = full_dir_path, file_type=self.file_type)
 
     def _read_from_file(self, file_name: str):
         if self.file_type == "pkl":
@@ -398,13 +270,9 @@ class FileDirDict(SimplePersistentDict):
 
     def __setitem__(self, key:SimpleDictKey, value:Any):
         filename = self._build_full_path(key, create_subdirs=True)
-        if self.immutable_items:
-            assert not os.path.exists(filename), (
-                "Can't modify an immutable item")
         self._save_to_file(filename, value)
 
     def __delitem__(self, key:SimpleDictKey):
-        assert not self.immutable_items, "Can't delete immutable items"
         filename = self._build_full_path(key)
         if not os.path.isfile(filename):
             raise KeyError(f"File {filename} does not exist")
@@ -437,13 +305,11 @@ class FileDirDict(SimplePersistentDict):
                         result_key = (*splitter(prefix_key), f[:-ext_len])
 
                         if iter_type == "keys":
-                            yield self._remove_all_suffixes_if_present(
-                                result_key)
+                            yield result_key
                         elif iter_type == "values":
                             yield self[result_key]
                         else:
-                            yield (self._remove_all_suffixes_if_present(
-                                result_key), self[result_key])
+                            yield (result_key, self[result_key])
 
         return step()
 
@@ -462,11 +328,10 @@ class S3_Dict(SimplePersistentDict):
         """
 
 
-    def __init__(self, bucket_name:str
+    def __init__(self, bucket_name: str
                  , region:str = None
                  , dir_name: str = "S3_Dict"
-                 , file_type: str = "pkl"
-                 , immutable_items = False):
+                 , file_type: str = "pkl"):
         """A constructor defines location of the store and object format to use.
 
         bucket_name and region define an S3 location of the storage
@@ -480,13 +345,8 @@ class S3_Dict(SimplePersistentDict):
         to store values.
         """
 
-        super().__init__(immutable_items = immutable_items)
-
         self.file_type = file_type
-        self.local_cache = FileDirDict(
-            dir_name = dir_name
-            , file_type = file_type
-            , immutable_items = immutable_items)
+        self.local_cache = FileDirDict(dir_name = dir_name, file_type = file_type)
 
         if region is None:
             self.s3_client = boto3.client('s3')
@@ -502,11 +362,6 @@ class S3_Dict(SimplePersistentDict):
         return objectname
 
     def __contains__(self, key:SimpleDictKey) -> bool:
-        if self.immutable_items:
-            file_name = self.local_cache._build_full_path(
-                key, create_subdirs=True)
-            if os.path.exists(file_name):
-                return True
         try:
             obj_name = self._build_full_objectname(key)
             self.s3_client.head_object(Bucket=self.bucket_name, Key=obj_name)
@@ -515,53 +370,23 @@ class S3_Dict(SimplePersistentDict):
             return False
 
     def __getitem__(self, key:SimpleDictKey) -> Any:
-        file_name = self.local_cache._build_full_path(key, create_subdirs=True)
-
-        if self.immutable_items:
-            try:
-                result = self.local_cache._read_from_file(file_name)
-                return result
-            except:
-                pass
-
         obj_name = self._build_full_objectname(key)
+        file_name = self.local_cache._build_full_path(key, create_subdirs=True)
         self.s3_client.download_file(self.bucket_name, obj_name, file_name)
-        result = self.local_cache._read_from_file(file_name)
-        if not self.immutable_items:
-            os.remove(file_name)
-
+        result =  self.local_cache[key]
+        del self.local_cache[key]
         return result
 
     def __setitem__(self, key:SimpleDictKey, value:Any):
-        file_name = self.local_cache._build_full_path(key, create_subdirs=True)
         obj_name = self._build_full_objectname(key)
-
-        if self.immutable_items:
-            key_is_present = False
-            if os.path.exists(file_name):
-                key_is_present = True
-            else:
-                try:
-                    self.s3_client.head_object(
-                        Bucket=self.bucket_name, Key=obj_name)
-                    key_is_present = True
-                except:
-                    key_is_present = False
-
-            assert not key_is_present, "Can't modify an immutable item"
-
-        self.local_cache._save_to_file(file_name, value)
+        file_name = self.local_cache._build_full_path(key, create_subdirs=True)
+        self.local_cache[key]=value
         self.s3_client.upload_file(file_name, self.bucket_name, obj_name)
-        if not self.immutable_items:
-            os.remove(file_name)
+        del self.local_cache[key]
 
     def __delitem__(self, key:SimpleDictKey):
-        assert not self.immutable_items, "Can't delete an immutable item"
         obj_name = self._build_full_objectname(key)
         self.s3_client.delete_object(Bucket = self.bucket_name, Key = obj_name)
-        file_name = self.local_cache._build_full_path(key)
-        if os.path.isfile(file_name):
-            os.remove(file_name)
 
     def __len__(self) -> int:
         num_files = 0
@@ -601,11 +426,77 @@ class S3_Dict(SimplePersistentDict):
                             continue
                         obj_key = splitter(obj_name)
                         if iter_type == "keys":
-                            yield self._remove_all_suffixes_if_present(obj_key)
+                            yield obj_key
                         elif iter_type == "values":
                             yield self[obj_key]
                         else:
-                            yield (self._remove_all_suffixes_if_present(obj_key)
-                                   , self[obj_key])
+                            yield (obj_key, self[obj_key])
 
         return step()
+
+
+class ImmutableS3_LocallyCached_Dict(S3_Dict):
+    """ A persistent Dict that stores immutable key-value pairs as S3 objects, and caches them locally.
+
+        A new object is created for each key-value pair.
+        A key is either an objectname (a 'filename' without an extension),
+        or a sequence of folder names (object name prefixes) that ends
+        with an objectname. A value can be any Python object,
+        which is stored in an object.
+
+        Once the key-value pair is created, it can't be deleted or changed.
+
+        The key-value pairs are stored in S3 backed, and also cached locally as files.
+
+        ImmutableS3_LocallyCached_Dict can store objects in binary objects (as pickles)
+        or in human-readable texts objects (using jsonpickles).
+        """
+
+
+    def __init__(self, bucket_name: str, region: str = None, dir_name: str = "S3_Dict", file_type: str = "pkl"):
+        """A constructor defines location of the store, local cache, and object format to use.
+
+        bucket_name and region define an S3 location of the storage
+        that will contain all the objects in the S3_Dict.
+        If the bucket does not exist, it will be created.
+
+        dir_name is a local directory that will be used to store cached files.
+
+        file_type can take one of two values: "pkl" or "json".
+        It defines which object format will be used by S3_Dict
+        to store values.
+        """
+
+        super().__init__(bucket_name, region, dir_name, file_type)
+        self._enforce_immutability = True
+        """ _enforce_immutability only exists for testing purposes, its value should never be changed"""
+
+    def __contains__(self, key:SimpleDictKey) -> bool:
+        return self.local_cache.__contains__(key) or super().__contains__(key)
+
+    def __getitem__(self, key:SimpleDictKey) -> Any:
+        obj_name = self._build_full_objectname(key)
+        file_name = self.local_cache._build_full_path(key, create_subdirs=True)
+        try:
+            if not os.path.isfile(file_name):
+                self.s3_client.download_file(self.bucket_name, obj_name, file_name)
+        except:
+            raise KeyError(f"Object {file_name} does not exist or could not be accessed")
+        result =  self.local_cache[key]
+        return result
+
+    def __setitem__(self, key:SimpleDictKey, value:Any):
+        if self._enforce_immutability and self.__contains__(key):
+            raise KeyError(f"Key {key} is already present in ImmutableS3_LocallyCached_Dict, value can't be changed.")
+        obj_name = self._build_full_objectname(key)
+        file_name = self.local_cache._build_full_path(key, create_subdirs=True)
+        self.local_cache[key]=value
+        self.s3_client.upload_file(file_name, self.bucket_name, obj_name)
+
+    def __delitem__(self, key:SimpleDictKey):
+        if self._enforce_immutability:
+            raise KeyError(f"Can't delete {key}: operation is not allowed for immutable Dict.")
+        else:
+            super().__delitem__(key)
+            if key in self.local_cache:
+                del self.local_cache[key]
