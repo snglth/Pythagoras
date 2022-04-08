@@ -1,30 +1,23 @@
 import os
 import pickle
-import platform
-from _socket import gethostname
-from datetime import datetime
-from getpass import getpass, getuser
-from socket import socket
-from zoneinfo import ZoneInfo
-
-import string
 from abc import *
-from typing import Set, Any, List, Tuple, Union
+from typing import Set, Any, Tuple, Union, Sequence
 import boto3
-
+from pythagoras.global_objects import *
 
 import jsonpickle
 import jsonpickle.ext.numpy as jsonpickle_numpy
 import jsonpickle.ext.pandas as jsonpickle_pandas
+
 jsonpickle_numpy.register_handlers()
 jsonpickle_pandas.register_handlers()
 
-from pythagoras.global_objects import *
 
-SimpleDictKey = Union[ str, List[str], Tuple[str,...] ]
-""" A value which can be used as a key for SimplePersistentDict.
+SimpleDictKey = Union[ str, Sequence[str] ]
+""" A value which can be used as a key for SimplePersistentDict. 
 
 SimpleDictKey must be a string or a sequence of strings.
+Thec characters within strings are restricted to allowed_key_chars set.
 """
 
 class SimplePersistentDict(ABC):
